@@ -70,6 +70,7 @@ class Actor(nn.Module):
             else:
                 nf4_config = None
 
+            # HF TF model
             self.model = AutoModelForCausalLM.from_pretrained(
                 pretrain_or_model,
                 trust_remote_code=True,
@@ -213,8 +214,10 @@ class Actor(nn.Module):
             assert return_output
             return output
 
+        # compute log probs, for each token, apply log(softmax(logits)), then select the log prob of the target token
         log_probs = log_probs_from_logits(output["logits"][:, :-1, :], sequences[:, 1:])
 
+        # for action log probs, extract the last num_actions tokens
         if not self.packing_samples:
             action_log_probs = log_probs[:, -num_actions:]
         else:

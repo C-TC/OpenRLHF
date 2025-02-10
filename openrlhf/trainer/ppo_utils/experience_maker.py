@@ -29,6 +29,7 @@ def pin_memory(tensor: Union[torch.Tensor, list[torch.Tensor]]):
     return tensor.pin_memory() if isinstance(tensor, torch.Tensor) else tensor
 
 
+# shape of experience components
 @dataclass
 class Experience:
     """Experience is a batch of data.
@@ -196,6 +197,7 @@ class NaiveExperienceMaker(ABC):
             experience = experience.to_device("cuda")
             reward = reward.to(device="cuda")
             num_actions = experience.info["num_actions"]
+            # reward = kl reward + (base reward at the last action)
             reward = compute_reward(
                 reward,
                 self.kl_ctl.value,
@@ -205,6 +207,7 @@ class NaiveExperienceMaker(ABC):
                 reward_clip_range=args.reward_clip_range,
             )
 
+            # calculate advantages and returns from rewards and values
             if self.advantage_estimator == "gae":
                 experience.advantages, experience.returns = self.get_advantages_and_returns(
                     experience.values,
@@ -246,12 +249,16 @@ class NaiveExperienceMaker(ABC):
         args = self.strategy.args
         self.actor.eval()
         # sample multiple response
+        # n_samples_per_prompt samples per prompt
         all_prompts = sum([[prompt] * args.n_samples_per_prompt for prompt in all_prompts], [])
         samples_list = []
         for i in range(0, len(all_prompts), args.micro_rollout_batch_size):
+            # micro_rollout_batch_size prompts (maybe replicated) per batch
             prompts = all_prompts[i : i + args.micro_rollout_batch_size]
             inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
+            # use actor training engine to generate samples 
             sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
+            # store samples
             samples = Samples(
                 sequences=sequences,
                 attention_mask=attention_mask,
@@ -261,6 +268,7 @@ class NaiveExperienceMaker(ABC):
                 response_length=action_mask.float().sum(dim=-1),
                 total_length=attention_mask.float().sum(dim=-1),
             )
+            # len(all_prompts) // micro_rollout_batch_size elements in samples_list
             samples_list.append(samples)
         return samples_list
 
@@ -283,18 +291,22 @@ class NaiveExperienceMaker(ABC):
         num_actions = samples.num_actions
 
         # log probs
+        # calculate log probs for the sequences (again? since we already perform the generation)
         action_log_probs = self.actor(sequences, num_actions, attention_mask)
 
         # init log probs
+        # ref model
         base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask)
 
         # values
+        # critic
         if self.critic is not None:
             value = self.critic(sequences, num_actions, attention_mask)
         else:
             value = None
 
         # rewards
+        # reward
         if self.remote_rm_url is not None:
             # remote RM
             queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
@@ -303,6 +315,7 @@ class NaiveExperienceMaker(ABC):
             # local RM
             r = self.reward_model(sequences, attention_mask)
 
+        # calculate KL divergence
         kl = compute_approx_kl(
             action_log_probs,
             base_action_log_probs,
@@ -322,6 +335,7 @@ class NaiveExperienceMaker(ABC):
         if self.critic is not None:
             self.critic.train()
 
+        # generate experience
         return Experience(
             sequences,
             action_log_probs,
@@ -637,6 +651,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         rank = torch.distributed.get_rank()
         world_size = torch.distributed.get_world_size()
 
+        # round-robin load balance for vllm requests
         # Select LLM engines: assign each rank an engine, or cycle through engines if world_size < engine_count
         if len(self.vllm_engines) <= world_size:
             llms = [self.vllm_engines[rank % len(self.vllm_engines)]]

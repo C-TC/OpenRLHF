@@ -126,6 +126,7 @@ class PPOTrainer(ABC):
 
         self.actor_loss_fn = PolicyLoss(eps_clip)
         self.critic_loss_fn = ValueLoss(value_clip)
+        # CE loss
         self.ptx_loss_fn = GPTLMLoss()
 
         self.freezing_actor_steps = getattr(self.args, "freezing_actor_steps", -1)
@@ -186,6 +187,7 @@ class PPOTrainer(ABC):
             log_dir = os.path.join(self.strategy.args.use_tensorboard, strategy.args.wandb_run_name)
             self._tensorboard = SummaryWriter(log_dir=log_dir)
 
+    # Core method to train
     def fit(
         self,
         args,
@@ -194,6 +196,7 @@ class PPOTrainer(ABC):
         consumed_samples=0,
         num_update_steps_per_episodes=1,
     ) -> None:
+        # TODO: what does this mean?
         num_rollouts_per_episodes = (
             num_update_steps_per_episodes
             * args.train_batch_size
@@ -216,6 +219,7 @@ class PPOTrainer(ABC):
         start_episode = consumed_samples // args.rollout_batch_size // num_rollouts_per_episodes
         consumed_samples = consumed_samples % (num_rollouts_per_episodes * args.rollout_batch_size)
 
+        # loop 0: episode
         for episode in range(start_episode, args.num_episodes):
             if isinstance(self.prompts_dataloader.sampler, DistributedSampler):
                 self.prompts_dataloader.sampler.set_epoch(
@@ -227,7 +231,10 @@ class PPOTrainer(ABC):
                 disable=not self.strategy.is_rank_0(),
             )
 
+            # loop 1: prompts
+            # TODO: how many prompts are there in rand_prompts?
             for rand_prompts in self.prompts_dataloader:
+                # batch generation of experiences
                 for i, experience in enumerate(
                     self.experience_maker.make_experience_list(rand_prompts, **self.generate_kwargs)
                 ):
@@ -240,6 +247,7 @@ class PPOTrainer(ABC):
 
                 torch.cuda.empty_cache()
                 self.replay_buffer.normalize("advantages", self.strategy)
+                # train actor and critic
                 status = self.ppo_train(steps)
                 self.replay_buffer.clear()
                 torch.cuda.empty_cache()
@@ -274,18 +282,22 @@ class PPOTrainer(ABC):
 
         status_list = []
         status_mean = {}
+        # loop 0: epochs
         for epoch in range(self.max_epochs):
             pbar = tqdm(
                 dataloader,
                 desc=f"Train epoch [{epoch + 1}/{self.max_epochs}]",
                 disable=not self.strategy.is_rank_0(),
             )
+            # loop 1: experiences
             for experience in pbar:
                 experience.to_device(device)
+                # train actor and critic
                 status = self.training_step(experience, global_steps)
 
                 # for DP
                 # weighted mean for kl
+                # kl weighted by response_length
                 if "kl" in status:
                     status["kl"] *= status["response_length"]
                     status = self.strategy.all_reduce(status)
@@ -333,6 +345,7 @@ class PPOTrainer(ABC):
         return status
 
     def training_step_actor(self, experience: Experience) -> Dict[str, float]:
+        # one training step for actor
         self.actor.train()
 
         # TODO: this is a bad indicator to say that data is packed...
@@ -375,10 +388,12 @@ class PPOTrainer(ABC):
         else:
             aux_loss = 0
         loss = actor_loss + aux_loss * self.args.aux_loss_coef
+        # actor backward
         self.strategy.backward(loss, self.actor, self.actor_optim)
 
         # ptx loss
         if self.pretrain_dataloader is not None:
+            # another actor backward for pretrain data (cross-entropy loss)
             data = next(self.pretrain_dataloader)
             inputs = data[1].squeeze(1).to(torch.cuda.current_device())
             attention_mask = data[2].squeeze(1).to(torch.cuda.current_device())
@@ -460,6 +475,7 @@ class PPOTrainer(ABC):
         else:
             aux_loss = 0
         loss = critic_loss + aux_loss * self.args.aux_loss_coef
+        # critic backward
         self.strategy.backward(loss, self.critic, self.critic_optim)
         self.strategy.optimizer_step(self.critic_optim, self.critic, self.critic_scheduler, name="critic")
 

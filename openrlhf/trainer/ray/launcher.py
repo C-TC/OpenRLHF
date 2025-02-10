@@ -54,6 +54,7 @@ class BasePPORole(DistributedTorchRayActor):
     def _setup_distributed(self, strategy: DeepspeedStrategy):
         # configure strategy
         self.strategy = strategy
+        # global initialization of torch distributed
         strategy.setup_distributed()
 
     def init_model_from_pretrained(self, *args, **kwargs):
@@ -140,6 +141,7 @@ class RewardModelRayActor(BasePPORole):
         torch.cuda.empty_cache()
 
 
+# ppo actor model
 class PPORayActorGroup:
     """
     A group of ray actors
@@ -179,6 +181,8 @@ class PPORayActorGroup:
         world_size = self._num_nodes * self._num_gpus_per_node
 
         # Use placement group to lock resources for models of same type
+        # create master node first then worker nodes and connect to master node
+        # pg is not None if colocate
         if self._num_gpus_per_node > 1 and pg is None:
             bundles = [
                 {"GPU": self._num_gpus_per_node, "CPU": self._num_gpus_per_node} for _ in range(self._num_nodes)
@@ -241,6 +245,7 @@ class PPORayActorGroup:
         """
         return [actor.init_model_from_pretrained.remote(*args, **kwargs) for actor in self._actor_handlers]
 
+    # training entrance
     def async_fit_actor_model(
         self,
         critic_model_group: "PPORayActorGroup",
@@ -273,9 +278,11 @@ class PPORayActorGroup:
         initial_actors = initial_model_group._actor_handlers
 
         refs = []
+        # actor model choose critic/reward/initial model in a round robin fashion (?)
         # TODO(wuxibin): actor model choose critic/reward/initial model in a
         # round robin fashion, implement more efficient dispatching strategy.
         for i, actor in enumerate(self._actor_handlers):
+            # in case of number of critic actors is less than actor model
             critic_actor = critic_actors[i % len(critic_actors)] if critic_actors else None
             initial_actor = initial_actors[i % len(initial_actors)]
 
@@ -285,6 +292,7 @@ class PPORayActorGroup:
                     actors = reward_model_group._actor_handlers
                     reward_actors.append(actors[i % len(actors)])
 
+            # fit == train
             refs.append(
                 actor.fit.remote(
                     critic_model=critic_actor,
@@ -294,6 +302,7 @@ class PPORayActorGroup:
                     reward_fn=reward_fn,
                     vllm_engines=vllm_engines,
                     # whether this actor should triger corresponding critic model training
+                    # some actor trigger critic training, some not
                     critic_train_remote=(i < len(critic_actors)) if critic_actor else None,
                 )
             )

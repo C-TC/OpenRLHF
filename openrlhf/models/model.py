@@ -164,6 +164,7 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
             super().__init__(config)
             setattr(self, self.base_model_prefix, base_llm_model(config))
 
+            # value head for reward, critic is similar. A projection of hidden_size to 1
             self.value_head_prefix = value_head_prefix
             setattr(self, value_head_prefix, nn.Linear(config.hidden_size, 1, bias=False))
 
@@ -206,6 +207,7 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 input_ids, attention_mask=attention_mask, position_ids=position_ids
             )
             last_hidden_states = outputs["last_hidden_state"]
+            # b x s
             values = getattr(self, self.value_head_prefix)(last_hidden_states).squeeze(-1)
 
             if self.packing_samples:
@@ -218,7 +220,9 @@ def _get_reward_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 eos_indices = packed_seq_lens.cumsum(dim=0) - 1
                 reward = reward.squeeze(0).gather(dim=0, index=eos_indices)
             else:
+                #  last non-padding position for each sequence
                 eos_indices = attention_mask.size(1) - 1 - attention_mask.long().fliplr().argmax(dim=1, keepdim=True)
+                # one reward for each microbatch(sequence)
                 reward = values.gather(dim=1, index=eos_indices).squeeze(1)
 
             if not self.training and self.normalize_reward:
@@ -274,12 +278,14 @@ def _get_critic_model(base_pretrained_model, base_llm_model, value_head_prefix="
                 input_ids, attention_mask=attention_mask, position_ids=position_ids
             )
             last_hidden_states = outputs["last_hidden_state"]
+            # b x (s-1)
             values = getattr(self, self.value_head_prefix)(last_hidden_states).squeeze(-1)[:, :-1]
 
             # normalize reward
             if self.normalize_reward:
                 values = (values - self.mean) / self.std
 
+            # return all values or only the action values
             if num_actions is None:
                 assert return_output
                 return outputs

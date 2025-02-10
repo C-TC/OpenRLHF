@@ -53,6 +53,8 @@ class GPTLMLoss(nn.Module):
         return loss
 
 
+# loss for policy model
+# TODO: explain the loss
 class PolicyLoss(nn.Module):
     """
     Policy Loss for PPO
@@ -77,6 +79,7 @@ class PolicyLoss(nn.Module):
         return loss
 
 
+# TODO: explain the loss
 class ValueLoss(nn.Module):
     """
     Value Loss for PPO

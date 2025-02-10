@@ -348,6 +348,7 @@ class ActorModelRayActor(BasePPORole):
         """Return the maximum number of steps."""
         return self._max_steps
 
+    # Training entrance
     def fit(
         self,
         critic_model: ray.actor.ActorHandle,
@@ -406,6 +407,7 @@ class ActorModelRayActor(BasePPORole):
         )
 
         # broadcast checkpoint
+        # broadcast checkpoint to vllm engines
         ckpt_path = os.path.join(args.ckpt_path, "_actor")
         if args.load_checkpoint and os.path.exists(ckpt_path) and not vllm_engines is None:
             torch.distributed.barrier()

@@ -22,6 +22,7 @@ def reward_fn(rewards: List[torch.Tensor]):
     return torch.stack(rewards).sum(dim=0)
 
 
+# many restrictions
 def _validate_args(args):
     actor_world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
 
@@ -43,10 +44,12 @@ def _validate_args(args):
         ), f"actor_world_size must be divisible by critic_world_size, got {actor_world_size} and {critic_world_size}"
 
 
+# ppo ray entrance
 def train(args):
     _validate_args(args)
 
     # configure strategy
+    # deepspeed strategy
     strategy = get_strategy(args)
 
     # if colocated, create placement group for actor and ref model explicitly.
@@ -60,6 +63,7 @@ def train(args):
             {"GPU": args.actor_num_gpus_per_node, "CPU": args.actor_num_gpus_per_node}
             for _ in range(args.actor_num_nodes)
         ]
+        # processgroup placement in ray
         pg = placement_group(bundles, strategy="STRICT_SPREAD")
         ray.get(pg.ready())
 
@@ -72,6 +76,7 @@ def train(args):
     # So 0.75/0.25 gpu is a tricky to let Ray spread all models evenly on all gpus.
     #   |actor| ref  |actor| ref  |actor| ref  |actor|ref  |
     #   |GPU0 | GPU0 |GPU1 | GPU1 |GPU2 | GPU2 |GPU3 | GPU3 |
+    # the 0.75 trick in placement
     actor_model = PPORayActorGroup(
         args.actor_num_nodes,
         args.actor_num_gpus_per_node,
@@ -132,6 +137,7 @@ def train(args):
         reward_models = None
 
     # init reference/reward/actor model
+    # init model from pretrained checkpoint, also init torch.dist
     refs = []
     refs.extend(ref_model.async_init_model_from_pretrained(strategy, args.pretrain))
     refs.extend(actor_model.async_init_model_from_pretrained(strategy, args.pretrain))
@@ -143,6 +149,7 @@ def train(args):
     vllm_engines = None
     if args.vllm_num_engines is not None and args.vllm_num_engines > 0:
         max_len = args.max_len if args.max_len else args.prompt_max_len + args.generate_max_len
+        # vllm in ray
         vllm_engines = create_vllm_engines(
             args.vllm_num_engines,
             args.vllm_tensor_parallel_size,
@@ -153,6 +160,7 @@ def train(args):
             max_len,
         )
 
+    # block until (ref, actor, reward, inference) models are initialized
     ray.get(refs)
 
     if args.critic_pretrain:
@@ -163,6 +171,7 @@ def train(args):
         ray.get(refs)
 
     # train actor and critic mdoel
+    # kick off training
     refs = actor_model.async_fit_actor_model(
         critic_model, ref_model, reward_models, args.remote_rm_url, reward_fn=reward_fn, vllm_engines=vllm_engines
     )

@@ -72,6 +72,7 @@ class DeepspeedStrategy(ABC):
         torch.cuda.manual_seed_all(seed)
 
     def setup_distributed(self, timeout=timedelta(minutes=60)) -> None:
+        # init deepspeed
         self.set_seed(self.seed)
 
         if self.args.local_rank == -1 and "LOCAL_RANK" in os.environ:  # for slurm
@@ -188,6 +189,7 @@ class DeepspeedStrategy(ABC):
         ret = []
         self.is_rlhf = is_rlhf
         for arg in models_or_model_optim_pairs:
+            # ds init, dirty
             if isinstance(arg, tuple):
                 assert len(arg) == 3, f'Expect (model, optimizer, scheduler) pair, got a tuple with size "{len(arg)}"'
                 if arg[0] is not None:
